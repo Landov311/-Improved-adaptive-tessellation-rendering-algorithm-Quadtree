@@ -1,72 +1,72 @@
-# Quadtree Structure in Adaptive Tessellation Rendering
+# Estructura de Quadtree en Renderizado Adaptativo de Teselación
 
-This document summarizes the quadtree-based data structure and related logic described in the paper *Improved Adaptive Tessellation Rendering Algorithm* by Wang et al. (2023). It is intended to serve as a design reference for implementing a simplified MVP of the quadtree component using a code editor like Cursor.
+Este documento resume la estructura de datos basada en quadtree y la lógica relacionada descrita en el artículo *Improved Adaptive Tessellation Rendering Algorithm* de Wang et al. (2023). Sirve como referencia para implementar un MVP simplificado del componente quadtree.
 
-## Overview
+## Visión General
 
-The paper describes an **adaptive tessellation rendering** algorithm with two main stages:
+El artículo describe un algoritmo de **teselación adaptativa** con dos etapas principales:
 
-- **Offline stage**: Reads mesh data and constructs a subdivision hierarchy using a quadtree.
-- **Online stage**: Uses the quadtree to efficiently evaluate surface patches in real time using shaders.
+- **Fase offline**: Lee datos de malla y construye una jerarquía de subdivisión usando un quadtree.
+- **Fase online**: Utiliza el quadtree para evaluar parches de superficie eficientemente en tiempo real usando shaders.
 
-The **quadtree** stores information about the subdivision of surface patches and references control point templates.
+El **quadtree** almacena información sobre la subdivisión de parches de superficie y hace referencia a plantillas de puntos de control.
 
-## Quadtree Node Types
+## Tipos de Nodos del Quadtree
 
-Each node in the quadtree represents a region of a mesh face. Leaf nodes represent subdomains that can be evaluated.
+Cada nodo en el quadtree representa una región de una cara de malla. Los nodos hoja representan subdominios que pueden evaluarse.
 
-- `RegularNode`: Normal patch with 16 control points.
-- `CreaseNode`: Patch with semi-sharp creases, stores crease sharpness.
-- `SpecialNode`: For corners with unconventional topology (extreme vertex + tangents).
-- `TerminalNode`: Stops further subdivision; stores 24 control points in a 5x5 mesh and a rotation index.
+- `RegularNode`: Parche normal con 16 puntos de control.
+- `CreaseNode`: Parche con pliegues semi-agudos, almacena nitidez del pliegue.
+- `SpecialNode`: Para esquinas con topología no convencional (vértice extremo + tangentes).
+- `TerminalNode`: Detiene la subdivisión; almacena 24 puntos de control en una malla 5x5 y un índice de rotación.
 
-## Node Structure
+## Estructura de Nodos
 
-### Internal Node
-- Contains 4 children (standard quadtree structure).
-- Each level represents a recursive subdivision step.
+### Nodo Interno
+- Contiene 4 hijos (estructura estándar de quadtree).
+- Cada nivel representa un paso de subdivisión recursiva.
 
-### Leaf Node (One of the following)
-- `RegularNode`: Contains 16 control points.
-- `CreaseNode`: Similar to regular but includes crease sharpness metadata.
-- `SpecialNode`: 3 templates for evaluating a corner patch.
-- `TerminalNode`: Dense control grid, no further subdivision.
+### Nodo Hoja (Uno de los siguientes)
+- `RegularNode`: Contiene 16 puntos de control.
+- `CreaseNode`: Similar al regular pero incluye metadatos de nitidez de pliegue.
+- `SpecialNode`: 3 plantillas para evaluar un parche de esquina.
+- `TerminalNode`: Malla densa de control, sin subdivisión adicional.
 
-## Templates and Control Points
+## Plantillas y Puntos de Control
 
-- Templates encode control points as **weighted sums of one-ring vertices**.
-- Each face maintains an ordered list of one-ring vertices.
-- A **weight matrix** maps vertex indices to control point weights.
-- This structure allows reuse and efficiency during runtime evaluation.
+- Las plantillas codifican puntos de control como **sumas ponderadas de vértices del anillo vecino**.
+- Cada cara mantiene una lista ordenada de vértices del anillo vecino.
+- Una **matriz de pesos** mapea índices de vértices a pesos de puntos de control.
+- Esta estructura permite reutilización y eficiencia durante la evaluación en tiempo de ejecución.
 
-## Evaluation Flow (Simplified)
+## Flujo de Evaluación (Simplificado)
 
 1. **Offline**
-   - Build quadtree based on Catmull-Clark subdivision.
-   - Attach templates and weight references to nodes.
+   - Construir el quadtree basado en subdivisión Catmull-Clark.
+   - Adjuntar plantillas y referencias de pesos a los nodos.
 
 2. **Online**
-   - Traverse quadtree to find the evaluation node based on UV coordinates.
-   - Evaluate surface patch using templates and control point weights.
-   - For terminal/special nodes, use fixed logic for tangent/position interpolation.
+   - Recorrer el quadtree para encontrar el nodo de evaluación basado en coordenadas UV.
+   - Evaluar el parche de superficie usando plantillas y pesos de puntos de control.
+   - Para nodos terminales/especiales, usar lógica fija para interpolación de tangentes/posiciones.
 
-## Algorithms Mentioned
+## Algoritmos Mencionados
 
-- **Greedy traversal** through the quadtree to optimize for SIMT divergence.
-- **Weight adjacency matrix** for ordering sensitive floating-point summation.
-- **Fibonacci heap** (conceptually) for theoretical runtime optimization in traversal (optional for MVP).
+- **Recorrido greedy** a través del quadtree para optimizar divergencia SIMT.
+- **Matriz de adyacencia de pesos** para suma ordenada sensible de punto flotante.
+- **Montículo de Fibonacci** (conceptual) para optimización teórica del tiempo de recorrido (opcional para MVP).
 
-## Suggested Implementation Plan
+## Plan de Implementación Sugerido
 
-1. Define the `QuadtreeNode` class and its types (enum or subclasses).
-2. Define the `Template` structure (list of weights + vertex indices).
-3. Build a simple mesh and recursively subdivide it to form the tree.
-4. Implement `insert`, `subdivide`, `query` methods.
-5. Write unit tests for:
-   - Correct template generation.
-   - Subdivision depth.
-   - Query accuracy at edges, centers, and corners.
+1. Definir la clase `QuadtreeNode` y sus tipos (enum o subclases).
+2. Definir la estructura `Template` (lista de pesos + índices de vértices).
+3. Construir una malla simple y subdividirla recursivamente para formar el árbol.
+4. Implementar métodos `insert`, `subdivide`, `query`.
+5. Escribir pruebas unitarias para:
+   - Generación correcta de plantillas.
+   - Profundidad de subdivisión.
+   - Precisión de consulta en bordes, centros y esquinas.
 
-## References
+## Referencias
 
 Wang, M. et al. (2023). *Improved Adaptive Tessellation Rendering Algorithm*. Technology and Health Care, 31(S81–S95). DOI: 10.3233/THC-236009
