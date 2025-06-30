@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include "okkk.h"
+#include <numeric>
 
 const float PI = 3.14159265358979323846f;
 
@@ -27,24 +28,24 @@ private:
     QuadtreeBuilder builder;
     float radius;
     int tessellation_depth;
+    std::vector<QuadtreeNode*> leaf_nodes; // Cache de nodos hoja
 
 public:
     CircleTessellator(float r = 1.0f, int depth = 5)
-        : radius(r), tessellation_depth(depth) {
+     : radius(r), tessellation_depth(depth) {
         builder.setMaxDepth(depth);
         root = builder.buildFromMesh(nullptr);
 
-        // Preparar one-ring vertices simulados para el círculo
-        std::vector<int> one_ring_vertices;
-        for (int i = 0; i < 24; ++i) {
-            one_ring_vertices.push_back(i);
-        }
+        // Preparar one-ring vertices (simplificado)
+        std::vector<int> one_ring_vertices(24);
+        std::iota(one_ring_vertices.begin(), one_ring_vertices.end(), 0);
 
-        // Asignar template al nodo raíz
+        // Asignar template y subdividir
         root->assignTemplateByType(one_ring_vertices);
-
-        // Subdividir hasta la profundidad deseada
         subdivideToDepth(root.get(), depth);
+
+        // Pre-cachear nodos hoja
+        collectLeafNodes(root.get(), leaf_nodes);
     }
 
     void subdivideToDepth(QuadtreeNode* node, int target_depth) {
@@ -68,13 +69,10 @@ public:
 
     std::vector<Vertex> generateVertices() {
         std::vector<Vertex> vertices;
+        vertices.reserve(leaf_nodes.size() * 4); // Pre-reservar memoria
+
         std::map<std::pair<int, int>, int> vertex_map;
 
-        // Recopilar todos los nodos hoja
-        std::vector<QuadtreeNode*> leaf_nodes;
-        collectLeafNodes(root.get(), leaf_nodes);
-
-        // Generar vértices para cada nodo hoja
         for (auto* node : leaf_nodes) {
             generateVerticesForNode(node, vertices, vertex_map);
         }
@@ -84,14 +82,12 @@ public:
 
     std::vector<unsigned int> generateIndices() {
         std::vector<unsigned int> indices;
-        std::vector<QuadtreeNode*> leaf_nodes;
-        collectLeafNodes(root.get(), leaf_nodes);
+        indices.reserve(leaf_nodes.size() * 6); // 2 triángulos por nodo (6 índices)
 
-        // Generar índices basados en la estructura del quadtree
         int vertex_offset = 0;
         for (auto* node : leaf_nodes) {
             generateIndicesForNode(node, indices, vertex_offset);
-            vertex_offset += 4; // Cada nodo hoja contribuye con 4 vértices
+            vertex_offset += 4;
         }
 
         return indices;
@@ -112,7 +108,7 @@ private:
     }
 
     void generateVerticesForNode(QuadtreeNode* node, std::vector<Vertex>& vertices,
-                                std::map<std::pair<int, int>, int>& vertex_map) {
+                             std::map<std::pair<int, int>, int>& vertex_map) {
         auto [u_bounds, v_bounds] = node->getUVBounds();
         float u_min = u_bounds.first, u_max = u_bounds.second;
         float v_min = v_bounds.first, v_max = v_bounds.second;
@@ -125,11 +121,11 @@ private:
         for (const auto& corner : corners) {
             Vertex vertex;
 
-            // Convertir coordenadas UV a coordenadas esféricas para un hemisferio
+            // Convertir coordenadas UV a coordenadas esféricas para una esfera completa
             float theta = corner.first * 2.0f * PI;  // Ángulo longitudinal [0, 2π]
-            float phi = corner.second * PI * 0.5f;   // Ángulo latitudinal [0, π/2] (solo hemisferio superior)
+            float phi = corner.second * PI;         // Ángulo latitudinal [0, π] (ahora cubre toda la esfera)
 
-            // Calcular posición en la esfera (hemisferio)
+            // Calcular posición en la esfera
             vertex.position.x = radius * sin(phi) * cos(theta);
             vertex.position.y = radius * cos(phi);
             vertex.position.z = radius * sin(phi) * sin(theta);
@@ -144,7 +140,6 @@ private:
             vertices.push_back(vertex);
         }
     }
-
     void generateIndicesForNode(QuadtreeNode* node, std::vector<unsigned int>& indices, int vertex_offset) {
         // Generar índices para un quad (2 triángulos)
         indices.push_back(vertex_offset + 0);
@@ -284,7 +279,7 @@ int main() {
     glEnable(GL_DEPTH_TEST);
 
     // Crear el teselador de círculo
-    CircleTessellator tessellator(1.0f, 3); // Radio 1.0, profundidad 4
+    CircleTessellator tessellator(1.0f, 4); //ajustar profundidad a gusto c:
 
     // Generar geometría
     std::vector<Vertex> vertices = tessellator.generateVertices();
