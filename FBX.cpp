@@ -17,6 +17,7 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <filesystem>
+#include <chrono>
 
 std::vector<Vertex> loadFBX(const std::string& filepath) {
     std::filesystem::path absolutePath = std::filesystem::absolute(filepath);
@@ -102,44 +103,173 @@ public:
     QuadtreeBuilder builder;
     std::vector<QuadtreeNode*> leaf_nodes;
     std::vector<Vertex> original_vertices;
+    // Mapas para búsqueda más eficiente con mejor granularidad
+    std::map<std::pair<int, int>, std::vector<size_t>> spatial_hash;
+    std::map<std::pair<float, float>, std::vector<size_t>> uv_hash;
+    float hash_cell_size = 0.002f; // Celda más pequeña para mejor precisión
+    float uv_hash_size = 0.01f; // Hash UV más fino
+
+    // Nuevos campos para mejor interpolación
+    std::vector<std::vector<size_t>> triangle_indices; // Triángulos originales
+    std::map<std::pair<size_t, size_t>, std::vector<size_t>> edge_map; // Mapeo de aristas
 
     ModelTessellator(const std::string& fbxPath, int depth = 5) {
         // Cargar modelo
         original_vertices = loadFBX(fbxPath);
 
-        // Configurar builder
-        builder.setMaxDepth(depth);
+        // Construir estructuras de datos mejoradas
+        buildTopologyInfo();
+        buildSpatialHash();
+        buildUVHash();
+
+        builder.setMaxDepth(std::max(depth, 10)); // Incrementado para mayor detalle
         root = builder.buildFromFBX(original_vertices);
 
-        // Pre-cachear nodos hoja
+        adaptiveSubdivision(root.get());
+
+        leaf_nodes.clear();
         collectLeafNodes(root.get(), leaf_nodes);
     }
 
-    void subdivideToDepth(QuadtreeNode* node, int target_depth) {
-        if (node->getDepth() >= target_depth) return;
+    void buildTopologyInfo() {
+        triangle_indices.clear();
+        edge_map.clear();
 
-        if (node->isLeaf()) {
+        for (size_t i = 0; i + 2 < original_vertices.size(); i += 3) {
+            triangle_indices.push_back({i, i+1, i+2});
+
+            // Mapear aristas
+            std::vector<std::pair<size_t, size_t>> edges = {
+                {i, i+1}, {i+1, i+2}, {i+2, i}
+            };
+
+            for (auto& edge : edges) {
+                if (edge.first > edge.second) std::swap(edge.first, edge.second);
+                edge_map[edge].push_back(i/3); // Índice del triángulo
+            }
+        }
+    }
+
+    void adaptiveSubdivision(QuadtreeNode* node) {
+        if (!node || node->getDepth() >= 15) return; // Límite máximo aumentado
+
+        auto [u_bounds, v_bounds] = node->getUVBounds();
+
+        float vertex_density = calculateVertexDensity(u_bounds.first, v_bounds.first,
+                                                     u_bounds.second, v_bounds.second);
+        float curvature_variation = calculateCurvatureVariation(u_bounds.first, v_bounds.first,
+                                                               u_bounds.second, v_bounds.second);
+        float geometric_complexity = calculateGeometricComplexity(u_bounds.first, v_bounds.first,
+                                                                 u_bounds.second, v_bounds.second);
+
+        bool should_subdivide = vertex_density > 2.0f || // Umbral reducido
+                               curvature_variation > 0.15f || // Más sensible a curvatura
+                               geometric_complexity > 0.2f || // Nueva métrica
+                               node->getDepth() < 8; // Mayor profundidad mínima
+
+        if (should_subdivide && node->isLeaf()) {
             auto children = node->subdivide();
 
-            // Asignar templates a los hijos
             std::vector<int> one_ring_vertices;
-            for (int i = 0; i < 24; ++i) {
+            for (int i = 0; i < 48; ++i) { // Duplicado para mayor densidad
                 one_ring_vertices.push_back(i);
             }
 
             for (auto* child : children) {
                 child->assignTemplateByType(one_ring_vertices);
-                subdivideToDepth(child, target_depth);
+                adaptiveSubdivision(child); // Recursión en hijos
             }
         }
     }
 
+    float calculateVertexDensity(float u_min, float v_min, float u_max, float v_max) {
+        int count = 0;
+        float area = (u_max - u_min) * (v_max - v_min);
+
+        for (const auto& vertex : original_vertices) {
+            if (vertex.texCoords.x >= u_min && vertex.texCoords.x <= u_max &&
+                vertex.texCoords.y >= v_min && vertex.texCoords.y <= v_max) {
+                count++;
+            }
+        }
+
+        return area > 0.0f ? count / area : 0.0f;
+    }
+
+    float calculateCurvatureVariation(float u_min, float v_min, float u_max, float v_max) {
+        std::vector<glm::vec3> normals;
+        std::vector<glm::vec3> positions;
+
+        for (const auto& vertex : original_vertices) {
+            if (vertex.texCoords.x >= u_min && vertex.texCoords.x <= u_max &&
+                vertex.texCoords.y >= v_min && vertex.texCoords.y <= v_max) {
+                normals.push_back(vertex.normal);
+                positions.push_back(vertex.position);
+            }
+        }
+
+        if (normals.size() < 3) return 0.0f;
+
+        float normal_variation = 0.0f;
+        float position_variation = 0.0f;
+
+        glm::vec3 avg_normal(0.0f);
+        glm::vec3 avg_position(0.0f);
+
+        for (size_t i = 0; i < normals.size(); ++i) {
+            avg_normal += normals[i];
+            avg_position += positions[i];
+        }
+        avg_normal /= static_cast<float>(normals.size());
+        avg_position /= static_cast<float>(positions.size());
+
+        for (size_t i = 0; i < normals.size(); ++i) {
+            normal_variation += glm::length(normals[i] - avg_normal);
+            position_variation += glm::length(positions[i] - avg_position);
+        }
+
+        return (normal_variation + position_variation * 0.1f) / normals.size();
+    }
+
+    float calculateGeometricComplexity(float u_min, float v_min, float u_max, float v_max) {
+        std::vector<glm::vec3> positions;
+
+        for (const auto& vertex : original_vertices) {
+            if (vertex.texCoords.x >= u_min && vertex.texCoords.x <= u_max &&
+                vertex.texCoords.y >= v_min && vertex.texCoords.y <= v_max) {
+                positions.push_back(vertex.position);
+            }
+        }
+
+        if (positions.size() < 4) return 0.0f;
+
+        // Calcular varianza direccional para detectar características geométricas
+        glm::vec3 center(0.0f);
+        for (const auto& pos : positions) {
+            center += pos;
+        }
+        center /= static_cast<float>(positions.size());
+
+        float max_distance = 0.0f;
+        float variance = 0.0f;
+
+        for (const auto& pos : positions) {
+            float dist = glm::length(pos - center);
+            max_distance = std::max(max_distance, dist);
+            variance += dist * dist;
+        }
+
+        variance /= positions.size();
+
+        return variance / (max_distance * max_distance + 1e-6f);
+    }
+
     std::vector<Vertex> generateVertices() {
         std::vector<Vertex> vertices;
-        vertices.reserve(leaf_nodes.size() * 4); // Pre-reservar memoria
+        vertices.reserve(leaf_nodes.size() * 25);
 
         for (size_t i = 0; i < leaf_nodes.size(); ++i) {
-            generateVerticesForNode(leaf_nodes[i], vertices, i * 4);
+            generateHighResVerticesForNode(leaf_nodes[i], vertices);
         }
 
         return vertices;
@@ -147,26 +277,62 @@ public:
 
     std::vector<unsigned int> generateIndices() {
         std::vector<unsigned int> indices;
-        indices.reserve(leaf_nodes.size() * 6); // 2 triángulos por nodo (6 índices)
+        indices.reserve(leaf_nodes.size() * 72);
 
+        unsigned int current_index = 0;
         for (size_t i = 0; i < leaf_nodes.size(); ++i) {
-            unsigned int base_index = i * 4;
-
-            // Primer triángulo
-            indices.push_back(base_index + 0);
-            indices.push_back(base_index + 1);
-            indices.push_back(base_index + 2);
-
-            // Segundo triángulo
-            indices.push_back(base_index + 0);
-            indices.push_back(base_index + 2);
-            indices.push_back(base_index + 3);
+            generateIndicesForNode(current_index, indices);
+            current_index += 25; // 5x5 = 25 vértices por nodo
         }
 
         return indices;
     }
 
 private:
+    void buildSpatialHash() {
+        for (size_t i = 0; i < original_vertices.size(); ++i) {
+            const auto& pos = original_vertices[i].position;
+            int x = static_cast<int>(std::floor(pos.x / hash_cell_size));
+            int y = static_cast<int>(std::floor(pos.y / hash_cell_size));
+            spatial_hash[{x, y}].push_back(i);
+        }
+    }
+
+    void buildUVHash() {
+        for (size_t i = 0; i < original_vertices.size(); ++i) {
+            const auto& uv = original_vertices[i].texCoords;
+            float u_key = std::floor(uv.x / uv_hash_size) * uv_hash_size;
+            float v_key = std::floor(uv.y / uv_hash_size) * uv_hash_size;
+            uv_hash[{u_key, v_key}].push_back(i);
+        }
+    }
+
+    std::vector<size_t> getNearbyVerticesUV(float u, float v, float radius = 0.03f) {
+        std::vector<size_t> nearby;
+
+        // Buscar en celdas del hash UV con mayor alcance
+        float u_key = std::floor(u / uv_hash_size) * uv_hash_size;
+        float v_key = std::floor(v / uv_hash_size) * uv_hash_size;
+
+        // Expandir búsqueda a más celdas vecinas
+        int search_range = 2;
+        for (int du = -search_range; du <= search_range; du++) {
+            for (int dv = -search_range; dv <= search_range; dv++) {
+                auto it = uv_hash.find({u_key + du * uv_hash_size, v_key + dv * uv_hash_size});
+                if (it != uv_hash.end()) {
+                    for (size_t idx : it->second) {
+                        float dist = glm::length(original_vertices[idx].texCoords - glm::vec2(u, v));
+                        if (dist <= radius) {
+                            nearby.push_back(idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        return nearby;
+    }
+
     void collectLeafNodes(QuadtreeNode* node, std::vector<QuadtreeNode*>& leaf_nodes) {
         if (node->isLeaf()) {
             leaf_nodes.push_back(node);
@@ -179,12 +345,16 @@ private:
             }
         }
     }
-
-    Vertex interpolateVertex(float u, float v) {
+    Vertex interpolateVertexAdvanced(float u, float v) {
         if (original_vertices.empty()) return Vertex();
+        std::vector<size_t> nearby_indices = getNearbyVerticesUV(u, v, 0.05f);
 
-        // Si hay pocos vértices, devuelve el más cercano directamente
-        if (original_vertices.size() <= 3) {
+        if (nearby_indices.empty()) {
+            nearby_indices = getNearbyVerticesUV(u, v, 0.1f);
+        }
+
+        if (nearby_indices.empty()) {
+            // Fallback: buscar el más cercano globalmente
             size_t closest = 0;
             float min_dist = std::numeric_limits<float>::max();
             for (size_t i = 0; i < original_vertices.size(); ++i) {
@@ -198,73 +368,122 @@ private:
             return original_vertices[closest];
         }
 
-        // Encuentra los vértices más cercanos en UV space
-        std::vector<std::pair<float, size_t>> distances;
-        distances.reserve(original_vertices.size());
+        // Interpolación mejorada con pesos más estables
+        const float epsilon = 1e-10f;
 
-        for (size_t i = 0; i < original_vertices.size(); ++i) {
-            glm::vec2 uv_diff = original_vertices[i].texCoords - glm::vec2(u, v);
+        // Ordenar por distancia y tomar más muestras
+        std::vector<std::pair<float, size_t>> distances;
+        for (size_t idx : nearby_indices) {
+            glm::vec2 uv_diff = original_vertices[idx].texCoords - glm::vec2(u, v);
             float dist = glm::dot(uv_diff, uv_diff);
-            distances.emplace_back(dist, i);
+            distances.emplace_back(dist, idx);
         }
 
-        // Ordena por distancia y toma los 3 más cercanos
         std::sort(distances.begin(), distances.end());
 
-        // Limita a máximo 3 vértices para interpolación
-        size_t num_vertices = std::min(size_t(3), distances.size());
+        // Si está muy cerca de un vértice, usar directamente
+        if (distances[0].first < epsilon) {
+            return original_vertices[distances[0].second];
+        }
 
-        // Interpolación con pesos inversos a la distancia
+        // Usar más vértices para interpolación más suave (hasta 12)
+        size_t num_samples = std::min(size_t(12), distances.size());
+
         Vertex result;
         result.position = glm::vec3(0.0f);
         result.normal = glm::vec3(0.0f);
-        result.texCoords = glm::vec2(0.0f);
+        result.texCoords = glm::vec2(u, v);
 
-        float totalWeight = 0.0f;
-        const float epsilon = 1e-6f;
+        float total_weight = 0.0f;
 
-        for (size_t i = 0; i < num_vertices; ++i) {
-            float dist = distances[i].first;
-            float weight = 1.0f / (dist + epsilon);
-            totalWeight += weight;
+        // Usar función de peso más suave (Wendland)
+        for (size_t i = 0; i < num_samples; ++i) {
+            float dist = std::sqrt(distances[i].first);
 
+            // Función de peso Wendland C2 para interpolación más suave
+            float h = 0.1f; // Radio de soporte
+            float weight = 0.0f;
+            if (dist < h) {
+                float q = dist / h;
+                weight = std::pow(1.0f - q, 4) * (4.0f * q + 1.0f);
+            } else {
+                weight = 1.0f / (1.0f + dist * dist * 50.0f); // Fallback para distancias mayores
+            }
+
+            total_weight += weight;
             const auto& vertex = original_vertices[distances[i].second];
+
             result.position += vertex.position * weight;
             result.normal += vertex.normal * weight;
-            result.texCoords += vertex.texCoords * weight;
         }
 
-        // Normaliza
-        if (totalWeight > 0.0f) {
-            result.position /= totalWeight;
-            result.normal /= totalWeight;
-            result.texCoords /= totalWeight;
+        if (total_weight > epsilon) {
+            result.position /= total_weight;
+            result.normal /= total_weight;
 
-            // Asegúrate de que la normal esté normalizada
-            if (glm::length(result.normal) > epsilon) {
-                result.normal = glm::normalize(result.normal);
+            // Normalizar normal con mejor manejo de casos extremos
+            float normal_length = glm::length(result.normal);
+            if (normal_length > epsilon) {
+                result.normal = result.normal / normal_length;
             } else {
-                result.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+                if (num_samples >= 3) {
+                    glm::vec3 v1 = original_vertices[distances[1].second].position -
+                                  original_vertices[distances[0].second].position;
+                    glm::vec3 v2 = original_vertices[distances[2].second].position -
+                                  original_vertices[distances[0].second].position;
+                    glm::vec3 computed_normal = glm::normalize(glm::cross(v1, v2));
+                    result.normal = computed_normal;
+                } else {
+                    result.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+                }
             }
         }
 
         return result;
     }
 
-    void generateVerticesForNode(QuadtreeNode* node, std::vector<Vertex>& vertices, size_t base_index) {
+    void generateHighResVerticesForNode(QuadtreeNode* node, std::vector<Vertex>& vertices) {
         auto [u_bounds, v_bounds] = node->getUVBounds();
 
-        // Generar 4 vértices para las esquinas del quad
-        std::vector<std::pair<float, float>> corners = {
-            {u_bounds.first, v_bounds.first},    // Bottom-left
-            {u_bounds.second, v_bounds.first},   // Bottom-right
-            {u_bounds.second, v_bounds.second},  // Top-right
-            {u_bounds.first, v_bounds.second}    // Top-left
-        };
+        // Crear una grilla 5x5 de vértices por nodo para mayor resolución
+        const int resolution = 5; // Incrementado de 3 a 5
 
-        for (const auto& [u, v] : corners) {
-            Vertex vertex = interpolateVertex(u, v);
-            vertices.push_back(vertex);
+        for (int i = 0; i < resolution; ++i) {
+            for (int j = 0; j < resolution; ++j) {
+                float u = u_bounds.first + (u_bounds.second - u_bounds.first) * i / (resolution - 1);
+                float v = v_bounds.first + (v_bounds.second - v_bounds.first) * j / (resolution - 1);
+
+                // Clamp coordenadas UV con margen más pequeño
+                u = std::clamp(u, 0.001f, 0.999f);
+                v = std::clamp(v, 0.001f, 0.999f);
+
+                Vertex vertex = interpolateVertexAdvanced(u, v);
+                vertices.push_back(vertex);
+            }
+        }
+    }
+
+    void generateIndicesForNode(unsigned int base_index, std::vector<unsigned int>& indices) {
+        // Para una grilla 5x5, generar triángulos
+        const int resolution = 5;
+
+        for (int i = 0; i < resolution - 1; ++i) {
+            for (int j = 0; j < resolution - 1; ++j) {
+                unsigned int tl = base_index + i * resolution + j;       // top-left
+                unsigned int tr = base_index + i * resolution + j + 1;   // top-right
+                unsigned int bl = base_index + (i + 1) * resolution + j; // bottom-left
+                unsigned int br = base_index + (i + 1) * resolution + j + 1; // bottom-right
+
+                // Primer triángulo (tl, bl, tr)
+                indices.push_back(tl);
+                indices.push_back(bl);
+                indices.push_back(tr);
+
+                // Segundo triángulo (tr, bl, br)
+                indices.push_back(tr);
+                indices.push_back(bl);
+                indices.push_back(br);
+            }
         }
     }
 };
@@ -368,6 +587,7 @@ unsigned int createShaderProgram() {
     return shaderProgram;
 }
 
+
 int main() {
     // Inicializar GLFW
     std::cout << "Directorio actual: " << std::filesystem::current_path() << std::endl;
@@ -381,7 +601,6 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    // Crear ventana
     GLFWwindow* window = glfwCreateWindow(800, 600, "Circle Tessellation with Quadtree", NULL, NULL);
     if (window == NULL) {
         std::cout << "Failed to create GLFW window" << std::endl;
@@ -397,8 +616,8 @@ int main() {
     }
 
     glEnable(GL_DEPTH_TEST);
+    auto start_time = std::chrono::high_resolution_clock::now();
 
-    // Crear el teselador de modelo
     ModelTessellator tessellator("Dragonite.FBX", 16);
     if (tessellator.original_vertices.empty()) {
         std::cerr << "Error: No se cargaron vértices del modelo" << std::endl;
@@ -408,7 +627,12 @@ int main() {
     // Generar geometría
     std::vector<Vertex> vertices = tessellator.generateVertices();
     std::vector<unsigned int> indices = tessellator.generateIndices();
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
+    std::cout << "================================\n";
+    std::cout << "Resumen de tiempos:\n";
+    std::cout << " - Tiempo total de generación de geometría: " << total_duration.count() << " ms\n";
     std::cout << "Generated " << vertices.size() << " vertices and "
               << indices.size() << " indices (" << indices.size()/3 << " triangles)" << std::endl;
 
@@ -486,7 +710,6 @@ int main() {
         glUniform3fv(glGetUniformLocation(shaderProgram, "lightColor"), 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
         glUniform3fv(glGetUniformLocation(shaderProgram, "objectColor"), 1, glm::value_ptr(glm::vec3(0.5f, 0.8f, 1.0f)));
 
-        // Renderizar
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
 

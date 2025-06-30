@@ -228,7 +228,49 @@ public:
         return {u_bounds, v_bounds};
     }
 
-    //dos funciones chau
+    QuadtreeNode* query(float query_u, float query_v) {
+        if (query_u < 0.0f || query_u > 1.0f || query_v < 0.0f || query_v > 1.0f) {
+            throw std::invalid_argument("UV coordinates (" + std::to_string(query_u) + ", " +
+                                      std::to_string(query_v) + ") are outside valid range [0, 1]");
+        }
+
+        auto [u_bounds, v_bounds] = getUVBounds();
+        float u_min = u_bounds.first, u_max = u_bounds.second;
+        float v_min = v_bounds.first, v_max = v_bounds.second;
+
+        if (!(u_min <= query_u && query_u <= u_max && v_min <= query_v && query_v <= v_max)) {
+            return nullptr;
+        }
+
+        if (isLeaf()) {
+            return this;
+        }
+
+        if (children.size() != 4) {
+            return nullptr;
+        }
+
+        int child_index;
+        if (query_u < u && query_v < v) {
+            child_index = 0;
+        } else if (query_u >= u && query_v < v) {
+            child_index = 1;
+        } else if (query_u < u && query_v >= v) {
+            child_index = 2;
+        } else {
+            child_index = 3;
+        }
+
+        return children[child_index]->query(query_u, query_v);
+    }
+
+    float evaluateControlPoint(const std::vector<float>& one_ring_values) {
+        if (!node_template) {
+            throw std::invalid_argument("No template assigned to node at depth " + std::to_string(depth));
+        }
+
+        return node_template->evaluate(one_ring_values);
+    }
 
     void assignTemplateByType(const std::vector<int>& one_ring_vertices) {
         switch (node_type) {

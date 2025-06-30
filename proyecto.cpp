@@ -13,7 +13,7 @@
 #include <cmath>
 #include "okkk.h"
 #include <numeric>
-
+#include <chrono>
 const float PI = 3.14159265358979323846f;
 
 struct Vertex {
@@ -136,7 +136,6 @@ private:
         }
     }
     void generateIndicesForNode(QuadtreeNode* node, std::vector<unsigned int>& indices, int vertex_offset) {
-        // Generar índices para un quad (2 triángulos)
         indices.push_back(vertex_offset + 0);
         indices.push_back(vertex_offset + 1);
         indices.push_back(vertex_offset + 2);
@@ -146,7 +145,6 @@ private:
         indices.push_back(vertex_offset + 3);
     }
 };
-// Shader sources
 const char* vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -246,7 +244,6 @@ unsigned int createShaderProgram() {
 }
 
 int main() {
-    // Inicializar GLFW
     if (!glfwInit()) {
         std::cout << "Failed to initialize GLFW" << std::endl;
         return -1;
@@ -273,13 +270,18 @@ int main() {
 
     glEnable(GL_DEPTH_TEST);
 
-    // Crear el teselador de círculo
-    CircleTessellator tessellator(1.0f, 4); //ajustar profundidad a gusto c:
+    auto start_time = std::chrono::high_resolution_clock::now();
 
-    // Generar geometría
+    CircleTessellator tessellator(1.0f, 3); //ajustar profundidad a gusto c:
+
     std::vector<Vertex> vertices = tessellator.generateVertices();
     std::vector<unsigned int> indices = tessellator.generateIndices();
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
+    std::cout << "================================\n";
+    std::cout << "Resumen de tiempos:\n";
+    std::cout << " - Tiempo total de generación de geometría: " << total_duration.count() << " ms\n";
     std::cout << "Generated " << vertices.size() << " vertices and "
               << indices.size() << " indices (" << indices.size()/3 << " triangles)" << std::endl;
 

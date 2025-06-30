@@ -389,7 +389,6 @@ public:
         if (vertices.empty()) {
             throw std::invalid_argument("Vertex list cannot be empty");
         }
-
         auto [minU, maxU, minV, maxV] = calculateUVBounds(vertices);
         auto root = std::make_unique<QuadtreeNode>(NodeType::REGULAR, 0, 0.5f, 0.5f);
         assignVerticesToNodes(root.get(), vertices, minU, maxU, minV, maxV);
@@ -397,9 +396,6 @@ public:
         return root;
     }
 };
-
-
-
 #endif //OKKK_H
 
 #endif //QUADTREE_FBX_H

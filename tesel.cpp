@@ -13,7 +13,8 @@
 #include <sstream>
 #include <map>
 #include <algorithm>
-#include "okkk.h" 
+#include "okkk.h"
+#include <chrono>
 
 // Estructura para un vértice 3D
 struct Vertex3D {
@@ -25,7 +26,6 @@ struct Vertex3D {
         : position(x, y, z), normal(nx, ny, nz), texCoord(u, v) {}
 };
 
-// Clase para manejar la malla teselada
 class TessellatedMesh {
 private:
     std::vector<Vertex3D> vertices;
@@ -41,7 +41,6 @@ private:
                0.2f * cos(u * 20.0f - v * 18.0f);
     }
 
-    // Generar una grilla regular de vértices
     void generateRegularGrid(int resolution) {
         vertices.clear();
         indices.clear();
@@ -51,8 +50,6 @@ private:
             for (int u = 0; u <= resolution; ++u) {
                 float uv_u = static_cast<float>(u) / resolution;
                 float uv_v = static_cast<float>(v) / resolution;
-
-                // Convertir coordenadas UV a espacio 3D
                 float x = (uv_u - 0.5f) * 10.0f; // Escalar de -5 a 5
                 float z = (uv_v - 0.5f) * 10.0f; // Escalar de -5 a 5
                 float y = heightFunction(uv_u, uv_v);
@@ -70,6 +67,7 @@ private:
             }
         }
 
+        // Generar índices para triángulos
         for (int v = 0; v < resolution; ++v) {
             for (int u = 0; u < resolution; ++u) {
                 int topLeft = v * (resolution + 1) + u;
@@ -77,12 +75,9 @@ private:
                 int bottomLeft = (v + 1) * (resolution + 1) + u;
                 int bottomRight = bottomLeft + 1;
 
-                // Primer triángulo (superior izquierdo)
                 indices.push_back(topLeft);
                 indices.push_back(bottomLeft);
                 indices.push_back(topRight);
-
-                // Segundo triángulo (inferior derecho)
                 indices.push_back(topRight);
                 indices.push_back(bottomLeft);
                 indices.push_back(bottomRight);
@@ -92,21 +87,15 @@ private:
 
     void generateVerticesFromQuadtree(QuadtreeNode* node, int max_depth, std::vector<std::pair<float, float>>& uvCoords) {
         if (!node) return;
-
-        // Si es una hoja o hemos alcanzado la profundidad máxima
         if (node->isLeaf() || node->getDepth() >= max_depth) {
             float u = node->getU();
             float v = node->getV();
             uvCoords.push_back({u, v});
             return;
         }
-
-        // Si no tiene hijos, subdivide
         if (node->getChildrenCount() == 0) {
             node->subdivide();
         }
-
-        // Procesar recursivamente los hijos
         for (size_t i = 0; i < node->getChildrenCount(); ++i) {
             generateVerticesFromQuadtree(node->getChild(i), max_depth, uvCoords);
         }
@@ -114,17 +103,13 @@ private:
 
 public:
     TessellatedMesh() {
-        // Crear el quadtree root
         quadtree_root = std::make_unique<QuadtreeNode>(NodeType::REGULAR, 0, 0.5f, 0.5f);
-
-        // Generar la malla inicial
-        generateMesh(6); 
-
-        // Configurar OpenGL
+        generateMesh(6);
         setupOpenGL();
     }
-
     void generateMesh(int max_depth) {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
         vertices.clear();
         indices.clear();
 
@@ -133,14 +118,11 @@ public:
 
         std::vector<std::pair<float, float>> uvCoords;
         generateVerticesFromQuadtree(quadtree_root.get(), max_depth, uvCoords);
-
-        // Generar vértices desde las coordenadas UV del quadtree
         for (const auto& uv : uvCoords) {
             float x = (uv.first - 0.5f) * 10.0f;
             float z = (uv.second - 0.5f) * 10.0f;
             float y = heightFunction(uv.first, uv.second);
 
-            // Calcular normal
             float delta = 0.01f;
             float hL = heightFunction(uv.first - delta, uv.second);
             float hR = heightFunction(uv.first + delta, uv.second);
@@ -152,8 +134,12 @@ public:
         }
 
 
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
         std::cout << "Malla generada: " << vertices.size() << " vértices, "
                   << indices.size() / 3 << " triángulos\n";
+        std::cout << "Tiempo de generación: " << duration.count() << " ms\n";
     }
 
     void setupOpenGL() {
@@ -222,7 +208,6 @@ public:
     }
 };
 
-// Funciones para manejar shaders
 std::string loadShaderSource(const std::string& filename) {
     std::ifstream file(filename);
     std::stringstream buffer;
@@ -248,7 +233,6 @@ GLuint compileShader(const std::string& source, GLenum type) {
 }
 
 GLuint createShaderProgram() {
-    // Vertex Shader
     std::string vertexSource = R"(
         #version 330 core
         layout (location = 0) in vec3 aPos;
@@ -272,6 +256,7 @@ GLuint createShaderProgram() {
         }
     )";
 
+    // Fragment Shader
     std::string fragmentSource = R"(
         #version 330 core
         in vec3 FragPos;
@@ -338,7 +323,6 @@ GLuint createShaderProgram() {
     return program;
 }
 
-// Variables globales para la cámara
 float cameraX = 0.0f, cameraY = 5.0f, cameraZ = 10.0f;
 float cameraYaw = -90.0f, cameraPitch = -30.0f;
 bool firstMouse = true;
@@ -362,7 +346,6 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
 
     cameraYaw += xoffset;
     cameraPitch += yoffset;
-
     if (cameraPitch > 89.0f) cameraPitch = 89.0f;
     if (cameraPitch < -89.0f) cameraPitch = -89.0f;
 }
@@ -496,7 +479,6 @@ int main() {
         // Renderizar malla
         mesh.render();
 
-        // Intercambiar buffers
         glfwSwapBuffers(window);
     }
 
