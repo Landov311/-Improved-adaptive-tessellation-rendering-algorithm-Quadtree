@@ -1,7 +1,6 @@
 //
 // Created by lvera on 29/06/2025.
 //
-// main.cpp - Ejemplo 3D usando el algoritmo de teselación con quadtree
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -14,7 +13,7 @@
 #include <sstream>
 #include <map>
 #include <algorithm>
-#include "okkk.h" //aqui esta el algoritmo de teselación
+#include "okkk.h" 
 
 // Estructura para un vértice 3D
 struct Vertex3D {
@@ -71,7 +70,6 @@ private:
             }
         }
 
-        // Generar índices para triángulos
         for (int v = 0; v < resolution; ++v) {
             for (int u = 0; u < resolution; ++u) {
                 int topLeft = v * (resolution + 1) + u;
@@ -92,7 +90,6 @@ private:
         }
     }
 
-    // Versión alternativa usando quadtree (si tu implementación lo permite)
     void generateVerticesFromQuadtree(QuadtreeNode* node, int max_depth, std::vector<std::pair<float, float>>& uvCoords) {
         if (!node) return;
 
@@ -121,7 +118,7 @@ public:
         quadtree_root = std::make_unique<QuadtreeNode>(NodeType::REGULAR, 0, 0.5f, 0.5f);
 
         // Generar la malla inicial
-        generateMesh(6); // Profundidad máxima de 6
+        generateMesh(6); 
 
         // Configurar OpenGL
         setupOpenGL();
@@ -131,8 +128,6 @@ public:
         vertices.clear();
         indices.clear();
 
-        // Por ahora, usar grilla regular ya que funciona
-        // Puedes cambiar esto más tarde cuando depures la implementación del quadtree
         int resolution = std::min(64, static_cast<int>(std::pow(2, max_depth)));
         generateRegularGrid(resolution);
 
@@ -156,9 +151,6 @@ public:
             vertices.emplace_back(x, y, z, normal.x, normal.y, normal.z, uv.first, uv.second);
         }
 
-        // Para índices con quadtree necesitarías una triangulación más compleja
-        // como Delaunay triangulation
-        //*/
 
         std::cout << "Malla generada: " << vertices.size() << " vértices, "
                   << indices.size() / 3 << " triángulos\n";
@@ -280,7 +272,6 @@ GLuint createShaderProgram() {
         }
     )";
 
-    // Fragment Shader
     std::string fragmentSource = R"(
         #version 330 core
         in vec3 FragPos;
