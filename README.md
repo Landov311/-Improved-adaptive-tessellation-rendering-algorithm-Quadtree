@@ -66,7 +66,8 @@ Cada nodo en el quadtree representa una región de una cara de malla. Los nodos 
    - Generación correcta de plantillas.
    - Profundidad de subdivisión.
    - Precisión de consulta en bordes, centros y esquinas.
-
+## Ejemplos de uso
+![](https://github.com/Landov311/-Improved-adaptive-tessellation-rendering-algorithm-Quadtree/blob/main/circulo_tess.png)
 ## Referencias
 
 Wang, M. et al. (2023). *Improved Adaptive Tessellation Rendering Algorithm*. Technology and Health Care, 31(S81–S95). DOI: 10.3233/THC-236009
