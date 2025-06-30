@@ -11,35 +11,107 @@
 #include <map>
 #include <algorithm>
 #include <cmath>
-#include "okkk.h"
+#include "quadtree_fbx.h"//lo más importante
 #include <numeric>
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+#include <filesystem>
 
-const float PI = 3.14159265358979323846f;
+std::vector<Vertex> loadFBX(const std::string& filepath) {
+    std::filesystem::path absolutePath = std::filesystem::absolute(filepath);
+    std::cout << "Buscando modelo en: " << absolutePath.string() << std::endl;
+    std::cout << "El archivo existe: " << std::filesystem::exists(absolutePath) << std::endl;
 
-struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
-    glm::vec2 texCoords;
-};
+    if (!std::filesystem::exists(absolutePath)) {
+        std::cerr << "ERROR: No se encontró el archivo en:\n" << absolutePath << std::endl;
+        std::cerr << "Directorio actual: " << std::filesystem::current_path() << std::endl;
+        throw std::runtime_error("Archivo no encontrado: " + absolutePath.string());
+    }
 
-class CircleTessellator {
-private:
+    Assimp::Importer importer;
+
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
+    const aiScene* scene = importer.ReadFile(filepath,
+        aiProcess_Triangulate |
+        aiProcess_GenNormals |
+        aiProcess_FlipUVs |
+        aiProcess_ValidateDataStructure |
+        aiProcess_JoinIdenticalVertices |
+        aiProcess_CalcTangentSpace);
+
+    if (!scene || !scene->mRootNode || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) {
+        std::cout << "Error de carga de modelo";
+        std::string error = importer.GetErrorString();
+        std::cerr << "Error al cargar FBX:\n" << error << std::endl;
+        throw std::runtime_error("FBX Error: " + error);
+    }
+
+    std::vector<Vertex> vertices;
+    std::cout << "Modelo tiene " << scene->mNumMeshes << " mallas\n";
+
+    for (unsigned int m = 0; m < scene->mNumMeshes; ++m) {
+        aiMesh* mesh = scene->mMeshes[m];
+        if (!mesh->mVertices) continue;
+
+        std::cout << "Malla " << m << " tiene " << mesh->mNumVertices << " vértices\n";
+
+        for (unsigned int i = 0; i < mesh->mNumVertices; ++i) {
+            Vertex vertex;
+            vertex.position = glm::vec3(
+                mesh->mVertices[i].x,
+                mesh->mVertices[i].y,
+                mesh->mVertices[i].z
+            );
+
+            // Normal (con fallback)
+            if (mesh->mNormals) {
+                vertex.normal = glm::normalize(glm::vec3(
+                    mesh->mNormals[i].x,
+                    mesh->mNormals[i].y,
+                    mesh->mNormals[i].z
+                ));
+            } else {
+                vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            }
+
+            // UVs (con fallback)
+            if (mesh->mTextureCoords[0]) {
+                vertex.texCoords = glm::vec2(
+                    mesh->mTextureCoords[0][i].x,
+                    mesh->mTextureCoords[0][i].y
+                );
+            } else {
+                vertex.texCoords = glm::vec2(0.0f);
+            }
+
+            vertices.push_back(vertex);
+        }
+    }
+
+    if (vertices.empty()) {
+        std::cerr << "Advertencia: No se cargaron vértices válidos\n";
+    }
+
+    return vertices;
+}
+
+class ModelTessellator {
+public:
     std::unique_ptr<QuadtreeNode> root;
     QuadtreeBuilder builder;
-    float radius;
-    int tessellation_depth;
     std::vector<QuadtreeNode*> leaf_nodes;
+    std::vector<Vertex> original_vertices;
 
-public:
-    CircleTessellator(float r = 1.0f, int depth = 5)
-     : radius(r), tessellation_depth(depth) {
+    ModelTessellator(const std::string& fbxPath, int depth = 5) {
+        // Cargar modelo
+        original_vertices = loadFBX(fbxPath);
+
+        // Configurar builder
         builder.setMaxDepth(depth);
-        root = builder.buildFromMesh(nullptr);
-        std::vector<int> one_ring_vertices(24);
-        std::iota(one_ring_vertices.begin(), one_ring_vertices.end(), 0);
-        root->assignTemplateByType(one_ring_vertices);
-        subdivideToDepth(root.get(), depth);
+        root = builder.buildFromFBX(original_vertices);
 
+        // Pre-cachear nodos hoja
         collectLeafNodes(root.get(), leaf_nodes);
     }
 
@@ -66,10 +138,8 @@ public:
         std::vector<Vertex> vertices;
         vertices.reserve(leaf_nodes.size() * 4); // Pre-reservar memoria
 
-        std::map<std::pair<int, int>, int> vertex_map;
-
-        for (auto* node : leaf_nodes) {
-            generateVerticesForNode(node, vertices, vertex_map);
+        for (size_t i = 0; i < leaf_nodes.size(); ++i) {
+            generateVerticesForNode(leaf_nodes[i], vertices, i * 4);
         }
 
         return vertices;
@@ -79,10 +149,18 @@ public:
         std::vector<unsigned int> indices;
         indices.reserve(leaf_nodes.size() * 6); // 2 triángulos por nodo (6 índices)
 
-        int vertex_offset = 0;
-        for (auto* node : leaf_nodes) {
-            generateIndicesForNode(node, indices, vertex_offset);
-            vertex_offset += 4;
+        for (size_t i = 0; i < leaf_nodes.size(); ++i) {
+            unsigned int base_index = i * 4;
+
+            // Primer triángulo
+            indices.push_back(base_index + 0);
+            indices.push_back(base_index + 1);
+            indices.push_back(base_index + 2);
+
+            // Segundo triángulo
+            indices.push_back(base_index + 0);
+            indices.push_back(base_index + 2);
+            indices.push_back(base_index + 3);
         }
 
         return indices;
@@ -102,50 +180,95 @@ private:
         }
     }
 
-    void generateVerticesForNode(QuadtreeNode* node, std::vector<Vertex>& vertices,
-                             std::map<std::pair<int, int>, int>& vertex_map) {
+    Vertex interpolateVertex(float u, float v) {
+        if (original_vertices.empty()) return Vertex();
+
+        // Si hay pocos vértices, devuelve el más cercano directamente
+        if (original_vertices.size() <= 3) {
+            size_t closest = 0;
+            float min_dist = std::numeric_limits<float>::max();
+            for (size_t i = 0; i < original_vertices.size(); ++i) {
+                glm::vec2 uv_diff = original_vertices[i].texCoords - glm::vec2(u, v);
+                float dist = glm::dot(uv_diff, uv_diff);
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    closest = i;
+                }
+            }
+            return original_vertices[closest];
+        }
+
+        // Encuentra los vértices más cercanos en UV space
+        std::vector<std::pair<float, size_t>> distances;
+        distances.reserve(original_vertices.size());
+
+        for (size_t i = 0; i < original_vertices.size(); ++i) {
+            glm::vec2 uv_diff = original_vertices[i].texCoords - glm::vec2(u, v);
+            float dist = glm::dot(uv_diff, uv_diff);
+            distances.emplace_back(dist, i);
+        }
+
+        // Ordena por distancia y toma los 3 más cercanos
+        std::sort(distances.begin(), distances.end());
+
+        // Limita a máximo 3 vértices para interpolación
+        size_t num_vertices = std::min(size_t(3), distances.size());
+
+        // Interpolación con pesos inversos a la distancia
+        Vertex result;
+        result.position = glm::vec3(0.0f);
+        result.normal = glm::vec3(0.0f);
+        result.texCoords = glm::vec2(0.0f);
+
+        float totalWeight = 0.0f;
+        const float epsilon = 1e-6f;
+
+        for (size_t i = 0; i < num_vertices; ++i) {
+            float dist = distances[i].first;
+            float weight = 1.0f / (dist + epsilon);
+            totalWeight += weight;
+
+            const auto& vertex = original_vertices[distances[i].second];
+            result.position += vertex.position * weight;
+            result.normal += vertex.normal * weight;
+            result.texCoords += vertex.texCoords * weight;
+        }
+
+        // Normaliza
+        if (totalWeight > 0.0f) {
+            result.position /= totalWeight;
+            result.normal /= totalWeight;
+            result.texCoords /= totalWeight;
+
+            // Asegúrate de que la normal esté normalizada
+            if (glm::length(result.normal) > epsilon) {
+                result.normal = glm::normalize(result.normal);
+            } else {
+                result.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            }
+        }
+
+        return result;
+    }
+
+    void generateVerticesForNode(QuadtreeNode* node, std::vector<Vertex>& vertices, size_t base_index) {
         auto [u_bounds, v_bounds] = node->getUVBounds();
-        float u_min = u_bounds.first, u_max = u_bounds.second;
-        float v_min = v_bounds.first, v_max = v_bounds.second;
 
         // Generar 4 vértices para las esquinas del quad
         std::vector<std::pair<float, float>> corners = {
-            {u_min, v_min}, {u_max, v_min}, {u_max, v_max}, {u_min, v_max}
+            {u_bounds.first, v_bounds.first},    // Bottom-left
+            {u_bounds.second, v_bounds.first},   // Bottom-right
+            {u_bounds.second, v_bounds.second},  // Top-right
+            {u_bounds.first, v_bounds.second}    // Top-left
         };
 
-        for (const auto& corner : corners) {
-            Vertex vertex;
-
-            // Convertir coordenadas UV a coordenadas esféricas para una esfera completa
-            float theta = corner.first * 2.0f * PI;  // Ángulo longitudinal [0, 2π]
-            float phi = corner.second * PI;         // Ángulo latitudinal [0, π] (ahora cubre toda la esfera)
-
-            // Calcular posición en la esfera
-            vertex.position.x = radius * sin(phi) * cos(theta);
-            vertex.position.y = radius * cos(phi);
-            vertex.position.z = radius * sin(phi) * sin(theta);
-
-            // La normal es igual a la posición normalizada
-            vertex.normal = glm::normalize(vertex.position);
-
-            // Coordenadas de textura
-            vertex.texCoords.x = corner.first;
-            vertex.texCoords.y = corner.second;
-
+        for (const auto& [u, v] : corners) {
+            Vertex vertex = interpolateVertex(u, v);
             vertices.push_back(vertex);
         }
     }
-    void generateIndicesForNode(QuadtreeNode* node, std::vector<unsigned int>& indices, int vertex_offset) {
-        // Generar índices para un quad (2 triángulos)
-        indices.push_back(vertex_offset + 0);
-        indices.push_back(vertex_offset + 1);
-        indices.push_back(vertex_offset + 2);
-
-        indices.push_back(vertex_offset + 0);
-        indices.push_back(vertex_offset + 2);
-        indices.push_back(vertex_offset + 3);
-    }
 };
+
 // Shader sources
 const char* vertexShaderSource = R"(
 #version 330 core
@@ -247,6 +370,8 @@ unsigned int createShaderProgram() {
 
 int main() {
     // Inicializar GLFW
+    std::cout << "Directorio actual: " << std::filesystem::current_path() << std::endl;
+
     if (!glfwInit()) {
         std::cout << "Failed to initialize GLFW" << std::endl;
         return -1;
@@ -273,8 +398,12 @@ int main() {
 
     glEnable(GL_DEPTH_TEST);
 
-    // Crear el teselador de círculo
-    CircleTessellator tessellator(1.0f, 4); //ajustar profundidad a gusto c:
+    // Crear el teselador de modelo
+    ModelTessellator tessellator("Dragonite.FBX", 16);
+    if (tessellator.original_vertices.empty()) {
+        std::cerr << "Error: No se cargaron vértices del modelo" << std::endl;
+        return -1;
+    }
 
     // Generar geometría
     std::vector<Vertex> vertices = tessellator.generateVertices();
@@ -282,6 +411,16 @@ int main() {
 
     std::cout << "Generated " << vertices.size() << " vertices and "
               << indices.size() << " indices (" << indices.size()/3 << " triangles)" << std::endl;
+
+    // Calcular bounding box para mejor visualización
+    glm::vec3 minBound(FLT_MAX), maxBound(-FLT_MAX);
+    for (const auto& v : vertices) {
+        minBound = glm::min(minBound, v.position);
+        maxBound = glm::max(maxBound, v.position);
+    }
+    glm::vec3 center = (minBound + maxBound) * 0.5f;
+    glm::vec3 size = maxBound - minBound;
+    float maxDimension = std::max({size.x, size.y, size.z});
 
     // Crear buffers
     unsigned int VAO, VBO, EBO;
@@ -310,9 +449,10 @@ int main() {
     // Crear shader program
     unsigned int shaderProgram = createShaderProgram();
 
-    // Variables para la cámara
-    glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
-    glm::vec3 cameraTarget = glm::vec3(0.0f, 0.0f, 0.0f);
+    // Variables para la cámara mejoradas
+    float cameraDistance = maxDimension * 2.0f;
+    glm::vec3 cameraPos = center + glm::vec3(0.0f, 0.0f, cameraDistance);
+    glm::vec3 cameraTarget = center;
     glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
 
     // Loop de renderizado
@@ -327,20 +467,21 @@ int main() {
 
         glUseProgram(shaderProgram);
 
-        // Matrices de transformación
+        // Matrices de transformación mejoradas
         glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, -center); // Centra el modelo
         model = glm::rotate(model, (float)glfwGetTime() * 0.5f, glm::vec3(0.0f, 1.0f, 0.0f));
 
         glm::mat4 view = glm::lookAt(cameraPos, cameraTarget, cameraUp);
-
-        glm::mat4 projection = glm::perspective(glm::radians(45.0f), 800.0f / 600.0f, 0.1f, 100.0f);
+        glm::mat4 projection = glm::perspective(glm::radians(45.0f), 800.0f / 600.0f, 0.1f, cameraDistance * 10.0f);
 
         // Enviar uniformes
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
 
-        glUniform3fv(glGetUniformLocation(shaderProgram, "lightPos"), 1, glm::value_ptr(glm::vec3(2.0f, 2.0f, 2.0f)));
+        glm::vec3 lightPos = center + glm::vec3(maxDimension, maxDimension, maxDimension);
+        glUniform3fv(glGetUniformLocation(shaderProgram, "lightPos"), 1, glm::value_ptr(lightPos));
         glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, glm::value_ptr(cameraPos));
         glUniform3fv(glGetUniformLocation(shaderProgram, "lightColor"), 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
         glUniform3fv(glGetUniformLocation(shaderProgram, "objectColor"), 1, glm::value_ptr(glm::vec3(0.5f, 0.8f, 1.0f)));
@@ -353,7 +494,6 @@ int main() {
         glfwPollEvents();
     }
 
-    // Limpiar recursos
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &EBO);
